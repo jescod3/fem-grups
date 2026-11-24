@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="ca">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fem grups!</title>
+<style>
+body {font: 17px system-ui,sans-serif; background:#f4f6fa; color:#243047; max-width:800px; margin:40px auto; padding:0 20px;}
+textarea, select, button {font:inherit; padding:10px; border-radius:8px; border:1px solid #aab4c5; box-sizing:border-box;}
+textarea {width:100%; min-height:160px;} label {display:block; margin:16px 0 6px;} button {background:#344d85;color:white;cursor:pointer;} #resultat {display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-top:24px;} article {background:white;padding:16px;border-radius:12px;} h2 {font-size:18px;margin-top:0;} li {margin:5px 0;}
+button:disabled {opacity:.45;cursor:default;}
+/* Control d’assistència: mantenim els colors de la versió anterior. */
+#assistencia {background:white;padding:16px;border-radius:12px;margin:16px 0;}
+#llista-assistencia {display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin:12px 0;}
+#llista-assistencia label {display:flex;align-items:center;gap:8px;margin:0;overflow-wrap:anywhere;}
+#llista-assistencia input {accent-color:#344d85;flex-shrink:0;}
+#llista-assistencia .absent {color:#697386;text-decoration:line-through;}
+#condicions {background:white;padding:16px;border-radius:12px;margin:16px 0;} .fila {display:flex;flex-wrap:wrap;gap:8px;align-items:center;} .fila select {max-width:100%;} #regles li {margin:10px 0;} #regles button {margin-left:8px;padding:5px 9px;} .inactiva {color:#697386;} 
+article.bloquejat {outline:2px solid #344d85;background:#e8edf7;} article.dest {outline:2px dashed #344d85;} .alumne {display:block;width:100%;text-align:left;background:#f4f6fa;color:#243047;padding:7px;overflow-wrap:anywhere;} .alumne.triat {background:#cbdaf4;} .alumne[draggable=true]{cursor:grab;} .control-grup {font-size:14px;margin-bottom:8px;} #controls-grups button {margin:4px 4px 4px 0;} #resultat ul {padding-left:0;list-style:none;} #resultat article {min-width:0;}
+</style>
+</head>
+<body>
+<h1>Fem grups!</h1><p>Versió 0.5 · Gestió de classes, assistència i control dels grups</p>
+<label for="classes">Classe desada</label>
+<select id="classes"><option value="">Sense classe seleccionada</option></select>
+<p><button id="nova">Nova classe</button> <button id="desar">Desar canvis</button> <button id="renom">Canviar nom</button> <button id="eliminar">Eliminar classe</button></p>
+<p><button id="exportar">Exportar còpia de seguretat</button> <button id="importar">Importar còpia de seguretat</button><input id="fitxer" type="file" accept=".json,application/json" hidden></p><p id="estat" role="status"></p>
+<label for="alumnes">Alumnes (un nom per línia)</label>
+<textarea id="alumnes"></textarea>
+<section id="assistencia" aria-labelledby="titol-assistencia">
+<h2 id="titol-assistencia">Assistència</h2>
+<p id="comptador" role="status"></p>
+<button id="tots" type="button">Seleccionar tots</button>
+<div id="llista-assistencia"></div>
+</section>
+<section id="condicions"><h2>Condicions dels grups</h2>
+<div class="fila"><select id="a" aria-label="Primer alumne"></select><select id="b" aria-label="Segon alumne"></select></div>
+<label for="tipus">Tipus de condició</label><select id="tipus"><option value="junts">Han d’anar junts</option><option value="separats">No poden anar junts</option></select>
+<label for="durada">Durada</label><select id="durada"><option value="temporal">Temporal</option><option value="permanent">Permanent</option></select>
+<p><button id="afegir">Afegir condició</button></p><p id="avis" role="status"></p><div id="regles"></div><button id="netejar">Esborrar condicions temporals</button></section>
+<label for="mida">Mida màxima dels grups</label>
+<select id="mida"><option>2</option><option selected>3</option><option>4</option><option>5</option><option>6</option></select>
+<label for="mode">Distribució</label>
+<select id="mode"><option value="equilibrat">Grups equilibrats</option><option value="fix">Últim grup més petit</option></select>
+<p><button id="generar">Generar grups</button></p>
+<div id="controls-grups" hidden><p>Arrossega un alumne a un altre grup o selecciona dos alumnes per intercanviar-los.</p><button id="resorteig">Regenerar grups desbloquejats</button> <button id="desbloquejar">Desbloquejar tots</button> <button id="desfer">Desfer últim canvi</button></div><p id="missatge" role="status"></p><section id="resultat" aria-live="polite"></section>
+<script>
+// Gestió de classes: les dades es desen només al navegador.
+const clau = 'fem-grups-classes-v02';
+const selector = document.getElementById('classes');
+const camp = document.getElementById('alumnes');
+const estat = document.getElementById('estat');
+let classes = [];
+let lecturaCorrecta = true;
+let activa = '';
+let original = camp.value;
+// L’assistència només viu en memòria: mai no es desa a localStorage.
+let assistencia = [];
+let temporals = new Map();
+let grupsActuals=[], bloquejos=[], anterior=null, triat=null, arrossegat=null;
+function llegirAlumnes() {
+ return camp.value.split('\n').map(nom => nom.trim()).filter(Boolean);
+}
+function netejarResultat() {
+ grupsActuals=[]; bloquejos=[]; anterior=null; triat=null; arrossegat=null; document.getElementById('controls-grups').hidden=true;
+ document.getElementById('resultat').replaceChildren();
+ document.getElementById('missatge').textContent = '';
+}
+function actualitzarComptador() {
+ const presents = assistencia.filter(a => a.present).length;
+ document.getElementById('comptador').textContent = `${assistencia.length} matriculats · ${presents} presents · ${assistencia.length-presents} absents`;
+}
+// En editar la llista, conservem les marques dels noms que ja hi eren.
+// Les cues permeten tractar també noms repetits com a alumnes diferents.
+function actualitzarAssistencia(reiniciar = false) {
+ const anteriors = new Map();
+ if (!reiniciar) assistencia.forEach(a => {
+  if (!anteriors.has(a.nom)) anteriors.set(a.nom, []);
+  anteriors.get(a.nom).push(a.present);
+ });
+ assistencia = llegirAlumnes().map(nom => ({nom, present: anteriors.get(nom)?.shift() ?? true}));
+ mostrarAssistencia();
+ mostrarRegles(); netejarResultat();
+}
+function mostrarAssistencia() {
+ const llista = document.getElementById('llista-assistencia');
+ llista.replaceChildren();
+ assistencia.forEach(alumne => {
+  const etiqueta = document.createElement('label');
+  const casella = document.createElement('input');
+  casella.type = 'checkbox'; casella.checked = alumne.present;
+  etiqueta.classList.toggle('absent', !alumne.present);
+  etiqueta.append(casella, document.createTextNode(alumne.nom));
+  casella.addEventListener('change', () => {
+   alumne.present = casella.checked;
+   etiqueta.classList.toggle('absent', !alumne.present);
+   actualitzarComptador(); mostrarRegles(); netejarResultat();
+  });
+  llista.append(etiqueta);
+ });
+ actualitzarComptador();
+ document.getElementById('tots').disabled = !assistencia.length;
+}
+camp.addEventListener('input', () => actualitzarAssistencia());
+document.getElementById('tots').onclick = () => {
+ assistencia.forEach(a => a.present = true);
+ mostrarAssistencia(); mostrarRegles(); netejarResultat();
+};
+try { classes = JSON.parse(localStorage.getItem(clau) || '[]'); if (!Array.isArray(classes)) throw Error(); } catch(e) { classes=[]; lecturaCorrecta=false; estat.textContent = 'No es poden llegir les dades locals.'; }
+function refrescar() {
+ selector.replaceChildren(new Option('Sense classe seleccionada', ''));
+ classes.forEach(c => selector.add(new Option(c.nom,c.id)));
+ selector.value = activa;
+ ['desar','renom','eliminar'].forEach(id => document.getElementById(id).disabled = !activa);
+}
+function persistir(noves) {
+ if(!lecturaCorrecta){estat.textContent="Desament bloquejat: no s’han pogut llegir les dades originals.";return false;}
+ try { localStorage.setItem(clau, JSON.stringify(noves)); classes = noves; return true; }
+ catch(e) { estat.textContent = 'No s’han pogut desar les dades al navegador.'; return false; }
+}
+function carregar(id) {
+ activa = id; camp.value = classes.find(c=>c.id===id)?.alumnes || ''; original = camp.value;
+ actualitzarAssistencia(true); refrescar();
+}
+function confirmarCanvis() { return camp.value === original || confirm('Hi ha canvis sense desar. Vols continuar i descartar-los?'); }
+selector.addEventListener('change',()=>{const id=selector.value; if(confirmarCanvis()) carregar(id); else selector.value=activa;});
+function nomValid(n,excepte='') {return n && !classes.some(c=>c.id!==excepte && c.nom.toLowerCase()===n.toLowerCase());}
+document.getElementById('nova').onclick=()=>{
+ const nom=prompt('Nom de la nova classe:')?.trim(); if(!nom) return;
+ if(!nomValid(nom)){estat.textContent='Aquest nom ja existeix.';return;}
+ const alumnes = activa ? '' : camp.value;
+ if(activa && !confirmarCanvis()) return;
+ const id=Date.now().toString(36)+Math.random().toString(36).slice(2);
+ if(persistir([...classes,{id,nom,alumnes}])){carregar(id);estat.textContent='Classe creada.';}
+};
+document.getElementById('desar').onclick=()=>{if(persistir(classes.map(c=>c.id===activa?{...c,alumnes:camp.value}:c))){original=camp.value;estat.textContent='Canvis desats.';}};
+document.getElementById('renom').onclick=()=>{const nom=prompt('Nou nom:',classes.find(c=>c.id===activa)?.nom)?.trim();if(!nom)return;if(!nomValid(nom,activa)){estat.textContent='Aquest nom ja existeix.';return;}if(persistir(classes.map(c=>c.id===activa?{...c,nom}:c))){refrescar();estat.textContent='Nom actualitzat.';}};
+document.getElementById('eliminar').onclick=()=>{if(confirm('Vols eliminar aquesta classe i la seva llista?') && persistir(classes.filter(c=>c.id!==activa))){carregar('');estat.textContent='Classe eliminada.';}};
+// Les regles permanents amplien les dades existents sense canviar la clau.
+function permanents(){return classes.find(c=>c.id===activa)?.regles || [];}
+function temps(){return temporals.get(activa)||[];}
+function regles(){return [...permanents(),...temps()];}
+function guardarRegles(r){return persistir(classes.map(c=>c.id===activa?{...c,regles:r}:c));}
+function identificadors(){const compt=new Map();return assistencia.map(a=>{const n=(compt.get(a.nom)||0)+1;compt.set(a.nom,n);return {...a,id:JSON.stringify([a.nom,n]),etiqueta:a.nom+(assistencia.filter(x=>x.nom===a.nom).length>1?' ('+n+')':'')};});}
+function mostrarRegles(){
+ const alumnes=identificadors(), presents=new Set(alumnes.filter(a=>a.present).map(a=>a.id));
+ for(const id of ['a','b']){const e=document.getElementById(id),v=e.value;e.replaceChildren(new Option('Selecciona un alumne',''));alumnes.forEach(a=>e.add(new Option(a.etiqueta,a.id)));e.value=alumnes.some(a=>a.id===v)?v:'';}
+ document.getElementById('afegir').disabled=alumnes.length<2;
+ document.getElementById('durada').options[1].disabled=!activa;
+ if(!activa)document.getElementById('durada').value='temporal';
+ const zona=document.getElementById('regles');zona.replaceChildren();
+ for(const [t,rs] of [['Permanents',permanents()],['Temporals',temps()]]){const h=document.createElement('h3');h.textContent=t;zona.append(h);const ul=document.createElement('ul');zona.append(ul);if(!rs.length){const li=document.createElement('li');li.textContent='Cap condició';ul.append(li);}
+ rs.forEach((r,i)=>{const li=document.createElement('li');const nom=id=>alumnes.find(a=>a.id===id)?.etiqueta||JSON.parse(id)[0];const actiu=presents.has(r.a)&&presents.has(r.b);li.textContent=nom(r.a)+(r.tipus==='junts'?' + ':' ≠ ')+nom(r.b)+(actiu?'':' · Inactiva');li.classList.toggle('inactiva',!actiu);const b=document.createElement('button');b.textContent='Eliminar';b.onclick=()=>{const noves=rs.filter((_,j)=>i!==j);if(t==='Permanents'){if(!guardarRegles(noves))return;}else temporals.set(activa,noves);mostrarRegles();netejarResultat();};li.append(b);ul.append(li);});}
+}
+document.getElementById('afegir').onclick=()=>{const a=document.getElementById('a').value,b=document.getElementById('b').value,tipus=document.getElementById('tipus').value,avis=document.getElementById('avis');avis.textContent='';if(!a||!b||a===b){avis.textContent='Selecciona dos alumnes diferents.';return;}if(regles().some(r=>(r.a===a&&r.b===b)||(r.a===b&&r.b===a))){avis.textContent='Ja existeix una condició per a aquesta parella. Elimina-la abans de canviar-la.';return;}const r={a,b,tipus};if(document.getElementById('durada').value==='permanent'){if(!activa||!guardarRegles([...permanents(),r]))return;}else temporals.set(activa,[...temps(),r]);mostrarRegles();netejarResultat();};
+document.getElementById('netejar').onclick=()=>{temporals.delete(activa);mostrarRegles();netejarResultat();};
+// Còpia local: no s’envia cap dada a Internet.
+document.getElementById('exportar').onclick=()=>{if(camp.value!==original){alert('Desa els canvis de la classe abans de fer la còpia.');return;}const url=URL.createObjectURL(new Blob([JSON.stringify({classes},null,2)],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download='fem-grups-copia.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);};
+document.getElementById('importar').onclick=()=>document.getElementById('fitxer').click();
+document.getElementById('fitxer').onchange=async e=>{try{const f=e.target.files[0];if(!f)return;const d=JSON.parse(await f.text()),cs=d.classes;const idValid=x=>{try{const p=JSON.parse(x);return typeof x==='string'&&Array.isArray(p)&&p.length===2&&typeof p[0]==='string'&&Number.isInteger(p[1])&&p[1]>0;}catch{return false;}};if(!Array.isArray(cs)||!cs.every(c=>c&&typeof c.id==='string'&&c.id&&typeof c.nom==='string'&&typeof c.alumnes==='string'&&(c.regles===undefined||Array.isArray(c.regles)&&c.regles.every(r=>r&&idValid(r.a)&&idValid(r.b)&&r.a!==r.b&&['junts','separats'].includes(r.tipus))))||new Set(cs.map(c=>c.id)).size!==cs.length)throw Error();if(confirm('La importació substituirà totes les classes desades i els canvis pendents. Continua només si tens una còpia de les dades actuals.')&&persistir(cs)){temporals.clear();carregar(cs[0]?.id||'');estat.textContent='Còpia importada.';}}catch{estat.textContent='Fitxer de còpia no vàlid.';}finally{e.target.value='';}};
+refrescar();
+if(classes.length) carregar(classes[0].id);
+else actualitzarAssistencia(true);
+
+// Cerca amb retrocés: els alumnes vinculats formen blocs indivisibles.
+function barrejar(xs){for(let i=xs.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[xs[i],xs[j]]=[xs[j],xs[i]];}return xs;}
+function resoldre(alumnes,rs,capacitats){
+ const ids=new Set(alumnes.map(a=>a.id));rs=rs.filter(r=>ids.has(r.a)&&ids.has(r.b));
+ const pare=new Map(alumnes.map(a=>[a.id,a.id]));function arrel(x){while(pare.get(x)!==x)x=pare.get(x);return x;}
+ rs.filter(r=>r.tipus==='junts').forEach(r=>pare.set(arrel(r.a),arrel(r.b)));
+ const blocs=new Map();alumnes.forEach(a=>{const k=arrel(a.id);if(!blocs.has(k))blocs.set(k,[]);blocs.get(k).push(a);});
+ const prohibits=new Map([...blocs.keys()].map(k=>[k,new Set()]));
+ for(const r of rs.filter(r=>r.tipus==='separats')){const a=arrel(r.a),b=arrel(r.b);if(a===b)return {error:'Condicions contradictòries: alumnes vinculats també han d’anar separats.'};prohibits.get(a).add(b);prohibits.get(b).add(a);}
+ const ordre=barrejar([...blocs.keys()]).sort((a,b)=>blocs.get(b).length-blocs.get(a).length||prohibits.get(b).size-prohibits.get(a).size);
+ if(ordre.some(k=>blocs.get(k).length>Math.max(...capacitats)))return {error:'Hi ha un bloc d’alumnes que han d’anar junts més gran que els grups disponibles.'};
+ const grups=capacitats.map(c=>({lliures:c,blocs:[]}));let passos=0,limit=false;const inici=performance.now();
+ function cerca(i){if(i===ordre.length)return true;if(++passos>200000||performance.now()-inici>1200){limit=true;return false;}const k=ordre[i],n=blocs.get(k).length,buits=new Set();for(const g of barrejar([...grups])){if(g.lliures<n||g.blocs.some(x=>prohibits.get(k).has(x)))continue;if(!g.blocs.length){if(buits.has(g.lliures))continue;buits.add(g.lliures);}g.blocs.push(k);g.lliures-=n;if(cerca(i+1))return true;g.blocs.pop();g.lliures+=n;if(limit)return false;}return false;}
+ if(!cerca(0))return {error:limit?'Límit de cerca assolit. No s’ha trobat una solució; prova de nou o revisa les condicions.':'No existeix una distribució compatible amb aquestes condicions i mides.'};
+ return {grups:grups.map(g=>barrejar(g.blocs.flatMap(k=>blocs.get(k))))};
+}
+// Conservem els identificadors individuals per comprovar les condicions.
+function capacitats(alumnes){const mida=Number(document.getElementById('mida').value),n=Math.ceil(alumnes.length/mida),eq=document.getElementById('mode').value==='equilibrat';return Array.from({length:n},(_,i)=>eq?Math.floor(alumnes.length/n)+(i<alumnes.length%n?1:0):Math.min(mida,alumnes.length-i*mida));}
+function generarGrups(){
+ if(bloquejos.some(Boolean)){regenerar();return;}
+ const alumnes=identificadors().filter(a=>a.present), missatge=document.getElementById('missatge');
+ if(!alumnes.length){missatge.textContent='Selecciona almenys un alumne present.';return;}
+ const r=resoldre(alumnes,regles(),capacitats(alumnes));if(r.error){missatge.textContent=r.error;return;}
+ grupsActuals=r.grups;bloquejos=r.grups.map(()=>false);anterior=null;triat=null;mostrarGrups();
+}
+function infraccions(gs){const pos=new Map();gs.forEach((g,i)=>g.forEach(a=>pos.set(a.id,i)));const nom=id=>identificadors().find(a=>a.id===id)?.etiqueta||id;return regles().filter(r=>pos.has(r.a)&&pos.has(r.b)&&((r.tipus==='junts')!==(pos.get(r.a)===pos.get(r.b)))).map(r=>nom(r.a)+(r.tipus==='junts'?' ha d’anar amb ':' no pot anar amb ')+nom(r.b));}
+function copiarGrups(gs){return gs.map(g=>[...g]);}
+function aplicarManual(gs){const avis=infraccions(gs),mida=Number(document.getElementById('mida').value);if(gs.some(g=>g.length>mida))avis.push('Se supera la mida màxima d’algun grup.');if(gs.some(g=>!g.length))avis.push('Algun grup quedarà buit.');if(avis.length&&!confirm('Aquest canvi deixa els avisos següents:\n'+avis.join('\n')+'\nVols continuar?')){triat=null;mostrarGrups();return;}anterior=copiarGrups(grupsActuals);grupsActuals=gs;triat=null;mostrarGrups();}
+function moure(origen,desti,id){if(origen===desti||bloquejos[origen]||bloquejos[desti])return;const gs=copiarGrups(grupsActuals),i=gs[origen].findIndex(a=>a.id===id);if(i<0)return;gs[desti].push(gs[origen].splice(i,1)[0]);aplicarManual(gs);}
+function seleccionar(i,id){if(bloquejos[i])return;if(!triat){triat={i,id};mostrarGrups();return;}const t=triat;triat=null;if(t.i===i||bloquejos[t.i]){mostrarGrups();return;}const gs=copiarGrups(grupsActuals),a=gs[t.i].findIndex(x=>x.id===t.id),b=gs[i].findIndex(x=>x.id===id);if(a<0||b<0)return;[gs[t.i][a],gs[i][b]]=[gs[i][b],gs[t.i][a]];aplicarManual(gs);}
+function mostrarGrups(){const zona=document.getElementById('resultat');zona.replaceChildren();document.getElementById('controls-grups').hidden=false;
+ grupsActuals.forEach((g,i)=>{const article=document.createElement('article'),h=document.createElement('h2'),ul=document.createElement('ul'),lock=document.createElement('button');h.textContent=`Grup ${i+1} · ${g.length}`;lock.className='control-grup';lock.textContent=bloquejos[i]?'🔒 Desbloquejar':'🔓 Bloquejar';lock.setAttribute('aria-pressed',String(bloquejos[i]));lock.onclick=()=>{bloquejos[i]=!bloquejos[i];triat=null;anterior=null;mostrarGrups();};article.classList.toggle('bloquejat',bloquejos[i]);
+ article.ondragover=e=>{if(arrossegat&&!bloquejos[i]&&arrossegat.i!==i){e.preventDefault();article.classList.add('dest');}};article.ondragleave=()=>article.classList.remove('dest');article.ondrop=e=>{e.preventDefault();article.classList.remove('dest');if(arrossegat){const t=arrossegat;arrossegat=null;moure(t.i,i,t.id);}};
+ g.forEach(a=>{const li=document.createElement('li'),b=document.createElement('button');b.className='alumne';b.textContent=a.etiqueta;b.disabled=bloquejos[i];b.draggable=!bloquejos[i];b.classList.toggle('triat',triat?.id===a.id);b.onclick=()=>seleccionar(i,a.id);b.ondragstart=e=>{arrossegat={i,id:a.id};e.dataTransfer.setData('text/plain',a.id);e.dataTransfer.effectAllowed='move';};b.ondragend=()=>{arrossegat=null;document.querySelectorAll('.dest').forEach(x=>x.classList.remove('dest'));};li.append(b);ul.append(li);});article.append(h,lock,ul);zona.append(article);});
+ const avis=infraccions(grupsActuals);if(grupsActuals.some(g=>g.length>Number(document.getElementById('mida').value)))avis.push('Mida màxima superada');if(grupsActuals.some(g=>!g.length))avis.push('Grup buit');document.getElementById('missatge').textContent=`${grupsActuals.flat().length} alumnes · ${grupsActuals.length} grups · ${bloquejos.filter(Boolean).length} bloquejats`+(triat?' · Selecciona un alumne d’un altre grup.':'')+(avis.length?' · Avís: '+avis.join('; '):'');document.getElementById('desfer').disabled=!anterior;document.getElementById('resorteig').disabled=bloquejos.every(Boolean);document.getElementById('desbloquejar').disabled=!bloquejos.some(Boolean);
+}
+// Els grups bloquejats són immutables. Comprovem també les regles que els connecten amb la resta.
+function regenerar(){const lliures=grupsActuals.map((g,i)=>i).filter(i=>!bloquejos[i]),pool=lliures.flatMap(i=>grupsActuals[i]),fixos=new Map();grupsActuals.forEach((g,i)=>{if(bloquejos[i])g.forEach(a=>fixos.set(a.id,i));});const presents=new Set(grupsActuals.flat().map(a=>a.id));const rs=regles().filter(r=>presents.has(r.a)&&presents.has(r.b));const error=t=>document.getElementById('missatge').textContent=t;
+ if(!lliures.length)return;for(const r of rs){const a=fixos.has(r.a),b=fixos.has(r.b);if(a&&b&&((r.tipus==='junts')!==(fixos.get(r.a)===fixos.get(r.b)))||a!==b&&r.tipus==='junts'){error('Els grups bloquejats impedeixen respectar les condicions. Desbloqueja algun grup.');return;}}
+ const caps=capacitats(grupsActuals.flat());if(caps.length!==grupsActuals.length||grupsActuals.some((g,i)=>bloquejos[i]&&g.length!==caps[i])){error('Les mides dels grups bloquejats no coincideixen amb la distribució prevista. Desbloqueja’ls.');return;}const r=resoldre(pool,rs,lliures.map(i=>caps[i]));if(r.error){error(r.error);return;}const gs=copiarGrups(grupsActuals);lliures.forEach((i,j)=>gs[i]=r.grups[j]);grupsActuals=gs;anterior=null;triat=null;mostrarGrups();}
+document.getElementById('resorteig').onclick=regenerar;
+document.getElementById('desbloquejar').onclick=()=>{bloquejos=bloquejos.map(()=>false);anterior=null;triat=null;mostrarGrups();};
+document.getElementById('desfer').onclick=()=>{if(anterior){grupsActuals=anterior;anterior=null;triat=null;mostrarGrups();}};
+for(const id of ['mida','mode'])document.getElementById(id).addEventListener('change',netejarResultat);
+document.getElementById('generar').addEventListener('click', generarGrups);
+</script>
+</body>
+</html>
